@@ -595,7 +595,7 @@ const server = new Server(
   },
   {
     capabilities: {
-      tools: {},
+      tools: { listChanged: true },
     },
   }
 );
@@ -757,6 +757,18 @@ Get these values from your IT administrator, then restart your coding assistant.
   const existingToken = await loadToken();
   if (existingToken) {
     const tokenData = loadTokenData();
+
+    // Clear cached sessions and notify client to re-fetch tools
+    // (handles the case where tools weren't loaded on initial startup)
+    Object.keys(serverSessions).forEach(key => delete serverSessions[key]);
+    Object.keys(toolServerMap).forEach(key => delete toolServerMap[key]);
+    try {
+      await server.sendToolListChanged();
+      console.error("📢 Notified client to refresh tool list (already authenticated)");
+    } catch (e) {
+      // Ignore - client may not support notifications
+    }
+
     return {
       content: [{
         type: "text",
@@ -765,7 +777,7 @@ Get these values from your IT administrator, then restart your coding assistant.
 Account: ${tokenData?.account?.username || "Unknown"}
 Status: Valid token present
 
-You can use the other agent365_* tools now. If you're having issues, try calling this tool again after the token expires.`,
+Tool list has been refreshed. The agent365_* tools (SharePoint, Excel, Word, Teams, Mail, Calendar, Copilot) should now be available.`,
       }],
     };
   }
@@ -792,6 +804,17 @@ You can use the other agent365_* tools now. If you're having issues, try calling
         scopes: scopes,
       });
       saveToken(response, config);
+
+      // Clear cached sessions and notify client to re-fetch tools
+      Object.keys(serverSessions).forEach(key => delete serverSessions[key]);
+      Object.keys(toolServerMap).forEach(key => delete toolServerMap[key]);
+      try {
+        await server.sendToolListChanged();
+        console.error("📢 Notified client to refresh tool list (token refreshed)");
+      } catch (e) {
+        // Ignore
+      }
+
       return {
         content: [{
           type: "text",
@@ -800,7 +823,7 @@ You can use the other agent365_* tools now. If you're having issues, try calling
 Account: ${response.account?.username || "Unknown"}
 Expires: ${response.expiresOn}
 
-Authentication successful! You can now use the other agent365_* tools.`,
+Tool list has been refreshed. The agent365_* tools (SharePoint, Excel, Word, Teams, Mail, Calendar, Copilot) should now be available.`,
         }],
       };
     } catch (e) {
@@ -847,9 +870,21 @@ The code expires in 15 minutes.`,
     });
 
     // Handle auth completion in background
-    authPromise.then((response) => {
+    authPromise.then(async (response) => {
       saveToken(response, config);
       console.error(`✅ Authentication completed for ${response.account?.username}`);
+
+      // Clear cached sessions so tools are re-fetched with the new token
+      Object.keys(serverSessions).forEach(key => delete serverSessions[key]);
+      Object.keys(toolServerMap).forEach(key => delete toolServerMap[key]);
+
+      // Notify client that tools have changed so it re-fetches the full tool list
+      try {
+        await server.sendToolListChanged();
+        console.error("📢 Notified client to refresh tool list");
+      } catch (e) {
+        console.error(`Could not notify client of tool list change: ${e.message}`);
+      }
     }).catch((e) => {
       console.error(`❌ Authentication failed: ${e.message}`);
     });
@@ -1100,7 +1135,7 @@ Option 2: Run setup first:
 
 async function main() {
   // Log configuration on startup
-  console.error("Agent 365 MCP Proxy v1.3.1");
+  console.error("Agent 365 MCP Proxy v1.3.2");
   console.error(`Configuration:`);
   console.error(`  MAX_RESPONSE_SIZE: ${MAX_RESPONSE_SIZE}`);
   console.error(`  REQUEST_TIMEOUT: ${REQUEST_TIMEOUT}ms`);
