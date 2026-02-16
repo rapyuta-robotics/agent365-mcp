@@ -29,10 +29,10 @@ Access SharePoint, Word, Teams, Outlook, Calendar, Excel, and M365 Copilot direc
 ## Prerequisites
 
 1. **Copilot for Microsoft 365 license** assigned to your account
-2. **IT Admin setup** (one-time per organization):
+2. **Organization setup** (one-time per organization):
    - Create Entra ID app registration
    - Grant admin consent for Agent 365 permissions
-   - Provide tenant ID and client ID to users
+    - Users can get Tenant ID and Client ID from entra.microsoft.com (or from IT admin if they don't have access)
 
 ## Quick Start
 
@@ -66,7 +66,7 @@ npx github:rapyuta-robotics/agent365-mcp setup
 ```
 
 This will:
-1. Prompt for your Tenant ID and Client ID (get from IT admin)
+1. Prompt for your Tenant ID and Client ID (get from entra.microsoft.com, or IT admin if you don't have access)
 2. Open Microsoft login in your browser
 3. Auto-configure Claude Code and/or VS Code
 4. Store refresh token for ~90 day sessions
@@ -80,6 +80,12 @@ This will:
 If you prefer manual setup:
 
 ### 1. Authenticate
+
+Get your values from entra.microsoft.com:
+- **Tenant ID**: Entra Home page
+- **Client ID**: Home > App Registrations > Agent 365 MCP
+
+If you don't have Entra access, ask your IT admin.
 
 ```bash
 export AGENT365_TENANT_ID="your-tenant-id"
@@ -111,11 +117,11 @@ npx github:rapyuta-robotics/agent365-mcp auth
 
 > **Quick way:** `Ctrl+Shift+P` (or `Cmd+Shift+P` on Mac) → `MCP: Open User Configuration` to directly edit your MCP config file.
 
-Add this to your config (`.vscode/mcp.json` or user settings):
+Add this to your MCP user config (`~/.vscode/mcp.json`):
 
 ```json
 {
-  "mcpServers": {
+  "servers": {
     "agent365": {
       "command": "npx",
       "args": ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
@@ -316,7 +322,7 @@ npx github:rapyuta-robotics/agent365-mcp auth
 ### Tools not loading
 1. Check status: `npx github:rapyuta-robotics/agent365-mcp status`
 2. Verify Copilot license is assigned to your account
-3. Ask IT admin to verify admin consent was granted
+3. Confirm Tenant ID (Entra Home) and Client ID (Home > App Registrations > Agent 365 MCP) in your config, or ask IT admin to verify admin consent if you don't have access
 
 ### Large response errors / Content truncated
 Some M365 queries return very large responses. The proxy automatically handles this:
