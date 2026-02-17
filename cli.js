@@ -190,7 +190,7 @@ MCP CLIENT CONFIGURATION:
     }
   }
 
-  VS Code (~/.vscode/mcp.json):
+  VS Code (~/.config/Code/User/mcp.json):
 
   {
     "servers": {
@@ -299,7 +299,7 @@ function getClaudeConfigPath() {
 
 function getVSCodeConfigPath() {
   const home = process.env.HOME || process.env.USERPROFILE || "";
-  return path.join(home, ".vscode", "mcp.json");
+  return path.join(home, ".config", "Code", "User", "mcp.json");
 }
 
 function getMcpServerConfig(tenantId, clientId) {
