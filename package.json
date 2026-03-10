@@ -1,7 +1,32 @@
 {
   "name": "agent365-mcp",
+  "displayName": "Agent 365 MCP",
   "version": "1.3.2",
   "description": "MCP server for Microsoft 365 - SharePoint, Word, Teams, Mail, Calendar, Copilot",
+  "icon": "assets/Microsoft_365_(2022).svg",
+  "mcpName": "io.github.rapyuta-robotics/agent365-mcp",
+  "mcpServer": {
+    "details": {
+      "publisher": "Rapyuta Robotics",
+      "homepage": "https://github.com/rapyuta-robotics/agent365-mcp",
+      "documentation": "https://github.com/rapyuta-robotics/agent365-mcp#readme",
+      "transport": "stdio",
+      "command": "npx -y github:rapyuta-robotics/agent365-mcp serve",
+      "requiredEnv": [
+        "AGENT365_TENANT_ID",
+        "AGENT365_CLIENT_ID"
+      ],
+      "services": [
+        "SharePoint & OneDrive",
+        "Word",
+        "Teams",
+        "Outlook Mail",
+        "Calendar",
+        "Excel",
+        "M365 Copilot"
+      ]
+    }
+  },
   "main": "index.js",
   "bin": {
     "agent365-mcp": "./cli.js"
@@ -41,6 +66,7 @@
     "README.md",
     "ADMIN.md",
     "AGENTS.md",
-    "ARCHITECTURE.md"
+    "ARCHITECTURE.md",
+    "assets/Microsoft_365_(2022).svg"
   ]
 }

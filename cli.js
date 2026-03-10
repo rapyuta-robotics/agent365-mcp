@@ -172,10 +172,28 @@ AUTHENTICATION:
     npx github:rapyuta-robotics/agent365-mcp auth
 
 MCP CLIENT CONFIGURATION:
-  Add to your MCP client config (e.g., ~/.claude.json, .vscode/mcp.json):
+  Add to your MCP client config:
+
+  Claude Code (~/.claude.json):
 
   {
     "mcpServers": {
+      "agent365": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
+        "env": {
+          "AGENT365_TENANT_ID": "<your-tenant-id>",
+          "AGENT365_CLIENT_ID": "<your-client-id>"
+        }
+      }
+    }
+  }
+
+  VS Code (~/.config/Code/User/mcp.json):
+
+  {
+    "servers": {
       "agent365": {
         "type": "stdio",
         "command": "npx",
@@ -281,17 +299,7 @@ function getClaudeConfigPath() {
 
 function getVSCodeConfigPath() {
   const home = process.env.HOME || process.env.USERPROFILE || "";
-  // Check common VS Code config locations
-  const paths = [
-    path.join(home, ".vscode", "mcp.json"),
-    path.join(home, "Library", "Application Support", "Code", "User", "settings.json"), // macOS
-    path.join(home, ".config", "Code", "User", "settings.json"), // Linux
-    path.join(home, "AppData", "Roaming", "Code", "User", "settings.json"), // Windows
-  ];
-  for (const p of paths) {
-    if (fs.existsSync(p)) return p;
-  }
-  return path.join(home, ".vscode", "mcp.json"); // Default
+  return path.join(home, ".config", "Code", "User", "mcp.json");
 }
 
 function getMcpServerConfig(tenantId, clientId) {
@@ -346,11 +354,11 @@ function configureVSCode(tenantId, clientId) {
     }
   }
 
-  if (!config.mcpServers) {
-    config.mcpServers = {};
+  if (!config.servers) {
+    config.servers = {};
   }
 
-  config.mcpServers.agent365 = getMcpServerConfig(tenantId, clientId);
+  config.servers.agent365 = getMcpServerConfig(tenantId, clientId);
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   console.log(`✅ VS Code configured: ${configPath}`);
@@ -382,7 +390,7 @@ async function interactiveSetup() {
   }
 
   if (!tenantId) {
-    console.log("\n📋 Get these values from your IT admin or Azure Portal:\n");
+    console.log("\n📋 Get these from entra.microsoft.com (Tenant ID on Home, Client ID under Home > App Registrations > Agent 365 MCP). If you don't have Entra access, ask your IT admin.\n");
     tenantId = await prompt("Enter Tenant ID: ");
     if (!tenantId) {
       console.error("❌ Tenant ID is required.");
@@ -447,7 +455,7 @@ async function main() {
         console.error("  export AGENT365_CLIENT_ID=<your-client-id>\n");
         console.error("Or provide as arguments:");
         console.error("  agent365-mcp auth <tenant-id> <client-id>\n");
-        console.error("Get these from your IT admin or Azure portal.");
+        console.error("Get these from entra.microsoft.com (Tenant ID on Home, Client ID under Home > App Registrations > Agent 365 MCP), or ask your IT admin if you don't have access.");
         process.exit(1);
       }
 

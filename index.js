@@ -747,7 +747,7 @@ No Tenant ID or Client ID found. These must be set in your MCP config:
 }
 \`\`\`
 
-Get these values from your IT administrator, then restart your coding assistant.`,
+Get these values from entra.microsoft.com (Tenant ID on Home, Client ID under Home > App Registrations > Agent 365 MCP). If you don't have Entra access, ask your IT administrator, then restart your coding assistant.`,
       }],
       isError: true,
     };
@@ -1110,7 +1110,7 @@ async function ensureAuthenticated() {
 ║                 CONFIGURATION REQUIRED                                ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
-No Tenant ID or Client ID found. Get these from your IT administrator.
+No Tenant ID or Client ID found. Get these from entra.microsoft.com (Tenant ID on Home, Client ID under Home > App Registrations > Agent 365 MCP), or ask your IT administrator if you don't have access.
 
 Option 1: Set environment variables in your MCP config:
   "env": {
