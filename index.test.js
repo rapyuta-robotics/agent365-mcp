@@ -409,6 +409,112 @@ describe("handleGetMeetingTranscript", () => {
     expect(result.content[0].text).toMatch(/[Gg]raph/);
     expect(result.content[0].text).toMatch(/agent365_graph_auth/);
   });
+
+  describe("speaker attribution fallback", () => {
+    let originalHttpsRequest;
+
+    beforeEach(() => {
+      originalHttpsRequest = https.request;
+      if (graphExports._setGraphTokenCache) {
+        graphExports._setGraphTokenCache(
+          "test-graph-token-transcript",
+          new Date(Date.now() + 3600 * 1000).toISOString(),
+        );
+      }
+    });
+
+    afterEach(() => {
+      https.request = originalHttpsRequest;
+      if (graphExports._resetGraphTokenCache) {
+        graphExports._resetGraphTokenCache();
+      }
+    });
+
+    /**
+     * Drive handleGetMeetingTranscript through its three Graph calls.
+     * `vttStatus` controls how the attributed (text/vtt) content call answers,
+     * letting one helper cover both the happy path and the 403 fallback.
+     */
+    function mockGraphSequence(vttStatus) {
+      const requests = [];
+
+      https.request = jest.fn((options, callback) => {
+        requests.push(options);
+        const res = new PassThrough();
+        res.headers = { "content-type": "application/json" };
+        res.statusCode = 200;
+
+        let payload;
+        if (options.path.includes("$filter=joinWebUrl")) {
+          payload = JSON.stringify({ value: [{ id: "MEETING-1", subject: "Sprint Review" }] });
+        } else if (options.path.endsWith("/transcripts")) {
+          payload = JSON.stringify({ value: [{ id: "TRANSCRIPT-1" }] });
+        } else if (options.path.includes("$format=text/vtt")) {
+          res.statusCode = vttStatus;
+          res.headers = { "content-type": "text/plain" };
+          payload = vttStatus === 200
+            ? "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Ada>Hello</v>"
+            : JSON.stringify({
+              error: {
+                code: "Forbidden",
+                message: "Speaker-attributed transcript content is disabled for this tenant.",
+                innerError: { code: "SpeakerAttributionNotAllowed" },
+              },
+            });
+        } else {
+          res.headers = { "content-type": "text/plain" };
+          payload = "00:00:01.000 --> 00:00:02.000\nHello";
+        }
+
+        callback(res);
+        process.nextTick(() => res.end(payload));
+
+        const req = new PassThrough();
+        req.setTimeout = jest.fn();
+        req.on = jest.fn(() => req);
+        req.write = jest.fn();
+        req.end = jest.fn();
+        return req;
+      });
+
+      return requests;
+    }
+
+    test("falls back to un-attributed text when tenant blocks speaker attribution", async () => {
+      const requests = mockGraphSequence(403);
+
+      const result = await graphExports.handleGetMeetingTranscript({
+        meetingUrl: "https://teams.microsoft.com/l/meetup-join/test",
+      });
+
+      expect(result.isError).toBeUndefined();
+
+      // The retry must use the Accept header, not a $format query param.
+      const retry = requests[requests.length - 1];
+      expect(retry.path).not.toContain("$format");
+      expect(retry.headers["Accept"]).toBe("application/vnd.microsoft.graph.transcript+text");
+
+      // Content is returned, and the caller is warned that names are absent.
+      expect(result.content[0].text).toContain("Hello");
+      expect(result.content[0].text).toMatch(/does NOT identify who said each line/);
+      expect(result.content[0].text).toMatch(/EnableAttributedTranscripts/);
+    });
+
+    test("keeps attributed VTT and adds no warning when attribution is allowed", async () => {
+      const requests = mockGraphSequence(200);
+
+      const result = await graphExports.handleGetMeetingTranscript({
+        meetingUrl: "https://teams.microsoft.com/l/meetup-join/test",
+      });
+
+      expect(result.isError).toBeUndefined();
+      // Exactly three calls: find meeting, list transcripts, fetch VTT — no retry.
+      expect(requests).toHaveLength(3);
+      expect(requests[2].path).toContain("$format=text/vtt");
+      expect(result.content[0].text).toContain("WEBVTT");
+      expect(result.content[0].text).not.toMatch(/does NOT identify who said each line/);
+    });
+  });
 });
 
 // ============================================================================

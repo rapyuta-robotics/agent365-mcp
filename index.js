@@ -957,7 +957,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   // Built-in tool: get meeting transcript via Graph API
   allTools.push({
     name: "teams_getMeetingTranscript",
-    description: "[Teams Meetings] Get the VTT transcript of a Teams meeting. Requires meetingUrl (get from calendar_ListCalendarView). Requires Graph API auth (agent365_graph_auth). Call agent365_help for workflow guidance.",
+    description: "[Teams Meetings] Get the transcript of a Teams meeting. Returns VTT with speaker names when the tenant allows speaker attribution, otherwise falls back to un-attributed plain text (timestamps and text only, no speaker names — the response says so when this happens). Requires meetingUrl (get from calendar_ListCalendarView). Requires Graph API auth (agent365_graph_auth). Call agent365_help for workflow guidance.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1639,12 +1639,20 @@ function handleHelp(args) {
 **Workflow:**
   1. calendar_ListCalendarView(userIdentifier='me', startDateTime, endDateTime, subject) → find the meeting
   2. Get onlineMeeting.joinUrl from the event response
-  3. teams_getMeetingTranscript(meetingUrl=joinUrl) → returns VTT transcript
+  3. teams_getMeetingTranscript(meetingUrl=joinUrl) → returns the transcript
 
 **Requirements:**
   - Transcription must have been enabled during the meeting
   - Requires Graph API auth: call agent365_graph_auth if you get auth errors
-  - Use ListCalendarView (NOT ListEvents) — most meetings are recurring`,
+  - Use ListCalendarView (NOT ListEvents) — most meetings are recurring
+
+**Speaker names:**
+  - Normally returns VTT with speaker names
+  - If the tenant disables speaker attribution, Graph returns 403
+    SpeakerAttributionNotAllowed; the tool then falls back to un-attributed
+    plain text (timestamps + text, NO speaker names) and says so in the response
+  - When that note is present, do NOT attribute lines to named participants
+  - Admin fix: Set-CsTeamsMeetingConfiguration -Identity Global -EnableAttributedTranscripts $true`,
 
     teams: `## Teams
 **Browsing:**
@@ -1803,12 +1811,29 @@ async function handleGetMeetingTranscript(args) {
       };
     }
 
-    // Get the content of the first (most recent) transcript
+    // Get the content of the first (most recent) transcript.
+    // VTT carries speaker names, but tenants can disable speaker-attributed
+    // transcript content (Set-CsTeamsMeetingConfiguration -EnableAttributedTranscripts
+    // $false). Graph then answers 403 SpeakerAttributionNotAllowed and tells us to
+    // retry with the un-attributed plain-text format, so try VTT first and fall back.
     const transcriptId = transcripts[0].id;
-    const contentResult = await makeGraphRequest(
+    const contentPath = `/me/onlineMeetings/${meetingId}/transcripts/${transcriptId}/content`;
+
+    let contentResult = await makeGraphRequest(
       "GET",
-      `/me/onlineMeetings/${meetingId}/transcripts/${transcriptId}/content?$format=text/vtt`,
+      `${contentPath}?$format=text/vtt`,
     );
+
+    let speakerAttributionUnavailable = false;
+    if (contentResult.error && contentResult.error.includes("SpeakerAttributionNotAllowed")) {
+      speakerAttributionUnavailable = true;
+      contentResult = await makeGraphRequest(
+        "GET",
+        contentPath,
+        undefined,
+        { "Accept": "application/vnd.microsoft.graph.transcript+text" },
+      );
+    }
 
     if (contentResult.error) {
       return {
@@ -1825,10 +1850,14 @@ async function handleGetMeetingTranscript(args) {
       ? contentResult
       : JSON.stringify(contentResult, null, 2);
 
+    const attributionNote = speakerAttributionUnavailable
+      ? `\n\nNOTE: Speaker-attributed transcript content is disabled for this tenant, so this transcript contains timestamps and text only — it does NOT identify who said each line. Do not attribute statements to specific participants from this transcript. A tenant admin can enable attribution with: Set-CsTeamsMeetingConfiguration -Identity Global -EnableAttributedTranscripts $true`
+      : "";
+
     return {
       content: [{
         type: "text",
-        text: `Meeting: ${meetingInfo.subject || "Unknown"}\nDate: ${meetingInfo.startDateTime || "Unknown"}\nOrganizer: ${meetingInfo.participants?.organizer?.upn || "Unknown"}\n\n--- Transcript ---\n\n${transcriptText}`,
+        text: `Meeting: ${meetingInfo.subject || "Unknown"}\nDate: ${meetingInfo.startDateTime || "Unknown"}\nOrganizer: ${meetingInfo.participants?.organizer?.upn || "Unknown"}${attributionNote}\n\n--- Transcript ---\n\n${transcriptText}`,
       }],
     };
   } catch (error) {
