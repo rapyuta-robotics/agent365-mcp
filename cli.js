@@ -73,7 +73,38 @@ function createMsalCachePlugin() {
   return { beforeCacheAccess, afterCacheAccess };
 }
 
-async function authenticate(tenantId, clientId) {
+function getSignInRequiredPath() {
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  return path.join(home, ".agent365-mcp", "sign-in-required.json");
+}
+
+function openBrowser(url) {
+  // Spawn without a shell so characters in the URL (&, ", %) are passed as-is.
+  const { spawn } = require("child_process");
+  let cmd;
+  let args;
+  if (process.platform === "darwin") {
+    cmd = "open";
+    args = [url];
+  } else if (process.platform === "win32") {
+    cmd = "rundll32";
+    args = ["url.dll,FileProtocolHandler", url];
+  } else {
+    cmd = "xdg-open";
+    args = [url];
+  }
+  try {
+    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+    child.on("error", () => {});
+    child.unref();
+  } catch (e) {
+    // The URL is printed as well, so the user can open it by hand
+  }
+}
+
+async function authenticate(tenantId, clientId, {
+  deviceCode = (process.env.AGENT365_AUTH_FLOW || "").toLowerCase() === "device_code",
+} = {}) {
   const tokenPath = getTokenPath();
   const dir = path.dirname(tokenPath);
   if (!fs.existsSync(dir)) {
@@ -113,7 +144,24 @@ async function authenticate(tenantId, clientId) {
     }
   }
 
-  // Fall back to device code if silent auth failed
+  // Browser sign-in if silent auth failed (device code only when asked for)
+  if (!response && !deviceCode) {
+    response = await pca.acquireTokenInteractive({
+      scopes: scopes,
+      prompt: "select_account",
+      openBrowser: async (url) => {
+        console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        console.log("🔐 AUTHENTICATION REQUIRED");
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        console.log("\n  A browser window is opening for Microsoft sign-in.");
+        console.log(`  If it doesn't open, visit this link on this computer:\n\n  ${url}\n`);
+        console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+        openBrowser(url);
+      },
+    });
+  }
+
+  // Device code flow (opt-in: --device-code or AGENT365_AUTH_FLOW=device_code)
   if (!response) {
     response = await pca.acquireTokenByDeviceCode({
       scopes: scopes,
@@ -144,6 +192,13 @@ async function authenticate(tenantId, clientId) {
   // Save config for future use
   saveConfig({ tenantId, clientId });
 
+  // The MCP server stops retrying silent refresh after Entra rejects the
+  // session; a fresh sign-in clears that state.
+  const signInRequiredPath = getSignInRequiredPath();
+  if (fs.existsSync(signInRequiredPath)) {
+    fs.unlinkSync(signInRequiredPath);
+  }
+
   console.log("✅ Authentication successful!");
   console.log(`📧 Logged in as: ${response.account?.username || "Unknown"}`);
   console.log(`⏰ Access token expires: ${response.expiresOn}`);
@@ -158,7 +213,10 @@ Agent 365 MCP - Microsoft 365 Integration for AI Coding Assistants
 
 USAGE:
   agent365-mcp setup             Interactive setup (recommended for first use)
-  agent365-mcp auth              Authenticate with Microsoft 365
+  agent365-mcp auth              Authenticate with Microsoft 365 (opens your browser)
+  agent365-mcp auth --device-code
+                                 Use device-code sign-in instead (no local browser,
+                                 e.g. over SSH; your tenant may block it)
   agent365-mcp serve             Start the MCP server (used by MCP clients)
   agent365-mcp status            Check authentication status
   agent365-mcp logout            Remove saved authentication
@@ -209,6 +267,7 @@ MCP CLIENT CONFIGURATION:
 ENVIRONMENT VARIABLES:
   AGENT365_TENANT_ID    Microsoft Entra tenant ID
   AGENT365_CLIENT_ID    Application (client) ID from Entra app registration
+  AGENT365_AUTH_FLOW    "browser" (default) or "device_code"
 
 AVAILABLE TOOLS (80+):
   sharepoint_*    SharePoint & OneDrive file operations
@@ -269,6 +328,10 @@ function logout() {
   }
   if (fs.existsSync(msalCachePath)) {
     fs.unlinkSync(msalCachePath);
+  }
+  const signInRequiredPath = getSignInRequiredPath();
+  if (fs.existsSync(signInRequiredPath)) {
+    fs.unlinkSync(signInRequiredPath);
   }
   console.log("✅ Logged out successfully. Tokens removed.");
 }
@@ -439,7 +502,10 @@ Your session is valid for ~90 days before re-authentication is needed.
 }
 
 async function main() {
-  const args = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+  const useDeviceCode = rawArgs.includes("--device-code") ||
+    (process.env.AGENT365_AUTH_FLOW || "").toLowerCase() === "device_code";
+  const args = rawArgs.filter((a) => a !== "--device-code");
   const command = args[0];
 
   switch (command) {
@@ -459,7 +525,7 @@ async function main() {
         process.exit(1);
       }
 
-      await authenticate(tenantId, clientId);
+      await authenticate(tenantId, clientId, { deviceCode: useDeviceCode });
       break;
 
     case "serve":
