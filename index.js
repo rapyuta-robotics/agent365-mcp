@@ -43,6 +43,14 @@ const ALLOW_DANGEROUS_TOOLS = process.env.AGENT365_ALLOW_DANGEROUS === "true";
 // Servers to disable (comma-separated list, e.g., "copilot,excel")
 const DISABLED_SERVERS = (process.env.AGENT365_DISABLED_SERVERS || "").split(",").filter(Boolean);
 
+// Sign-in flow: "browser" (default) opens the system browser and receives the
+// result on a localhost redirect. "device_code" is kept only for machines with
+// no local browser (for example SSH sessions); many tenants block it because
+// device-code phishing is common.
+const AUTH_FLOW = (process.env.AGENT365_AUTH_FLOW || "browser").toLowerCase() === "device_code"
+  ? "device_code"
+  : "browser";
+
 // ============================================================================
 // MCP SERVER DEFINITIONS
 // Each server requires Copilot for M365 license unless noted otherwise.
@@ -234,6 +242,206 @@ const AGENT365_API = "ea9ffc3e-8a23-4a7d-836d-234d7c7565c1";
 let cachedToken = null;
 let cachedTokenExpiry = null;
 
+// ============================================================================
+// SIGN-IN REQUIRED MARKER
+// When Entra rejects the refresh token (revoked, MFA expired, password reset),
+// every later silent refresh fails the same way. Each failure is still a
+// sign-in attempt in the tenant's logs, and because the session was protocol
+// tracked, it shows up as device-code activity. Remember the rejection on disk
+// so new MCP server processes (one per client session) stop retrying until the
+// user signs in again.
+// ============================================================================
+
+const SIGN_IN_REQUIRED_PATH = path.join(HOME, ".agent365-mcp", "sign-in-required.json");
+
+function needsFreshSignIn(error) {
+  return error?.name === "InteractionRequiredAuthError" || error?.errorCode === "invalid_grant";
+}
+
+function readSignInRequired() {
+  try {
+    if (fs.existsSync(SIGN_IN_REQUIRED_PATH)) {
+      return JSON.parse(fs.readFileSync(SIGN_IN_REQUIRED_PATH, "utf8")) || {};
+    }
+  } catch (e) {
+    // Treat an unreadable marker as absent
+  }
+  return {};
+}
+
+function writeSignInRequired(data) {
+  try {
+    const dir = path.dirname(SIGN_IN_REQUIRED_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    if (Object.keys(data).length === 0) {
+      if (fs.existsSync(SIGN_IN_REQUIRED_PATH)) fs.unlinkSync(SIGN_IN_REQUIRED_PATH);
+      return;
+    }
+    fs.writeFileSync(SIGN_IN_REQUIRED_PATH, JSON.stringify(data, null, 2), { mode: 0o600 });
+  } catch (e) {
+    // Marker is an optimization; ignore write errors
+  }
+}
+
+function isSignInRequired(kind) {
+  return Boolean(readSignInRequired()[kind]);
+}
+
+function markSignInRequired(kind, error) {
+  const data = readSignInRequired();
+  data[kind] = { since: new Date().toISOString(), errorCode: error?.errorCode || error?.name || "unknown" };
+  writeSignInRequired(data);
+}
+
+function clearSignInRequired(kind) {
+  const data = readSignInRequired();
+  if (data[kind]) {
+    delete data[kind];
+    writeSignInRequired(data);
+  }
+}
+
+// ============================================================================
+// INTERACTIVE SIGN-IN
+// ============================================================================
+
+const SIGN_IN_SUCCESS_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Signed in</title></head>
+<body style="font-family: sans-serif; margin: 3em;"><h1>Signed in to Microsoft 365</h1>
+<p>You can close this tab and return to your coding assistant.</p></body></html>`;
+
+const SIGN_IN_ERROR_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Sign-in failed</title></head>
+<body style="font-family: sans-serif; margin: 3em;"><h1>Sign-in failed</h1>
+<p>Return to your coding assistant and try again. The server log has the error details.</p></body></html>`;
+
+// One pending interactive sign-in per token kind, so repeated tool calls reuse
+// the same browser window or device code instead of starting new ones.
+const pendingSignIns = {};
+
+const SIGN_IN_START_TIMEOUT_MS = 30000;
+
+/**
+ * Start an interactive sign-in and resolve as soon as the user has something to
+ * act on: a browser window (browser flow) or a code (device_code flow).
+ *
+ * Resolves to { flow, url, userCode?, done }, where `done` settles when the
+ * sign-in completes. Rejects only if the flow fails before it starts.
+ */
+function startInteractiveSignIn(pca, scopes, flow = AUTH_FLOW) {
+  return new Promise((resolve, reject) => {
+    const session = { flow };
+    let started = false;
+    let timedOut = false;
+
+    // Don't leave the tool call hanging if the flow never gets going
+    // (for example, Entra metadata can't be fetched).
+    const startTimer = setTimeout(() => {
+      if (started) return;
+      timedOut = true;
+      reject(new Error("Sign-in did not start within 30 seconds. Check network access to login.microsoftonline.com and try again."));
+    }, SIGN_IN_START_TIMEOUT_MS);
+    if (typeof startTimer.unref === "function") startTimer.unref();
+
+    if (flow === "device_code") {
+      session.done = pca.acquireTokenByDeviceCode({
+        scopes,
+        deviceCodeCallback: (response) => {
+          started = true;
+          session.userCode = response.userCode;
+          session.url = response.verificationUriComplete || response.verificationUri;
+          saveDeviceCodeToFile(response.userCode, response.verificationUri);
+          copyToClipboard(response.userCode);
+          resolve(session);
+        },
+      });
+    } else {
+      session.done = pca.acquireTokenInteractive({
+        scopes,
+        prompt: "select_account",
+        successTemplate: SIGN_IN_SUCCESS_HTML,
+        errorTemplate: SIGN_IN_ERROR_HTML,
+        openBrowser: async (url) => {
+          // The caller already gave up; don't open a window nobody is waiting on
+          if (timedOut) throw new Error("Sign-in start timed out");
+          started = true;
+          session.url = url;
+          openBrowser(url);
+          resolve(session);
+        },
+      });
+    }
+
+    session.done
+      .catch((e) => {
+        if (!started) reject(e);
+      })
+      .finally(() => clearTimeout(startTimer));
+  });
+}
+
+/**
+ * Start (or reuse) an interactive sign-in for one token kind and run
+ * `onSuccess(response)` in the background when it completes.
+ */
+// Reuse a pending sign-in for this long. MSAL's loopback listener has no
+// timeout of its own, so after this a new call starts a fresh sign-in (for
+// example when the user closed the browser tab without finishing).
+const PENDING_SIGN_IN_TTL_MS = 10 * 60 * 1000;
+
+async function beginSignIn(kind, pca, scopes, onSuccess) {
+  const pending = pendingSignIns[kind];
+  if (pending && Date.now() - pending.startedAt < PENDING_SIGN_IN_TTL_MS) {
+    return pending;
+  }
+
+  const session = await startInteractiveSignIn(pca, scopes);
+  session.startedAt = Date.now();
+  pendingSignIns[kind] = session;
+
+  session.done
+    .then(async (response) => {
+      await onSuccess(response);
+    })
+    .catch((e) => {
+      console.error(`❌ ${kind} sign-in failed: ${e.message}`);
+    })
+    .finally(() => {
+      if (pendingSignIns[kind] === session) delete pendingSignIns[kind];
+    });
+
+  return session;
+}
+
+/**
+ * User-facing instructions for a started sign-in session.
+ */
+function signInInstructions(session, retryTool) {
+  if (session.flow === "device_code") {
+    return `**Your code: \`${session.userCode}\`** (copied to clipboard)
+
+**Steps for user:**
+1. Go to: ${session.url}
+2. Enter the code: **${session.userCode}**
+3. Sign in with your Microsoft account
+
+**For agent:** After the user confirms they've completed login, call \`${retryTool}\` again to verify authentication succeeded.
+
+The code expires in 15 minutes.`;
+  }
+
+  return `A browser window has opened for Microsoft sign-in.
+
+**Steps for user:**
+1. Sign in with your Microsoft account in the browser window.
+2. When the page says "Signed in to Microsoft 365", close the tab.
+
+If no browser window opened, open this link **on this computer** (the sign-in result is returned to a local address, so it won't work on another device):
+${session.url}
+
+**For agent:** After the user confirms they've completed login, call \`${retryTool}\` again to verify authentication succeeded.`;
+}
+
 function createMsalCachePlugin() {
   const beforeCacheAccess = async (cacheContext) => {
     try {
@@ -262,6 +470,11 @@ async function refreshTokenSilently() {
   // Load config to get tenant/client IDs
   const tokenData = loadTokenData();
   if (!tokenData || !tokenData.tenantId || !tokenData.clientId) {
+    return null;
+  }
+
+  if (isSignInRequired("agent365")) {
+    console.error("Skipping silent refresh: Entra rejected the saved session earlier. Use agent365_authenticate to sign in again.");
     return null;
   }
 
@@ -300,6 +513,9 @@ async function refreshTokenSilently() {
     return response.accessToken;
   } catch (e) {
     console.error(`Silent token refresh failed: ${e.message}`);
+    if (needsFreshSignIn(e)) {
+      markSignInRequired("agent365", e);
+    }
     return null;
   }
 }
@@ -382,6 +598,11 @@ async function refreshGraphTokenSilently() {
     return null;
   }
 
+  if (isSignInRequired("graph")) {
+    console.error("Skipping silent Graph refresh: Entra rejected the saved session earlier. Use agent365_graph_auth to sign in again.");
+    return null;
+  }
+
   const pca = new PublicClientApplication({
     auth: {
       clientId: tokenData.clientId,
@@ -420,6 +641,9 @@ async function refreshGraphTokenSilently() {
     return response.accessToken;
   } catch (e) {
     console.error(`Silent Graph token refresh failed: ${e.message}`);
+    if (needsFreshSignIn(e)) {
+      markSignInRequired("graph", e);
+    }
     return null;
   }
 }
@@ -474,7 +698,7 @@ async function acquireGraphToken() {
 
   // Try silent first
   const accounts = await pca.getTokenCache().getAllAccounts();
-  if (accounts.length > 0) {
+  if (accounts.length > 0 && !isSignInRequired("graph")) {
     try {
       const response = await pca.acquireTokenSilent({
         account: accounts[0],
@@ -483,34 +707,16 @@ async function acquireGraphToken() {
       saveGraphToken(response, config);
       return response.accessToken;
     } catch (e) {
-      // Fall through to device code
+      if (needsFreshSignIn(e)) markSignInRequired("graph", e);
+      // Fall through to interactive sign-in
     }
   }
 
-  // Device code flow
-  return new Promise((resolve) => {
-    pca.acquireTokenByDeviceCode({
-      scopes: GRAPH_SCOPES,
-      deviceCodeCallback: (response) => {
-        const deviceCode = response.userCode;
-        const verificationUrl = response.verificationUriComplete || response.verificationUri;
-
-        saveDeviceCodeToFile(deviceCode, response.verificationUri);
-        copyToClipboard(deviceCode);
-
-        // Store for the caller to use
-        resolve({
-          deviceCode,
-          verificationUrl,
-          authPromise: null, // Will be set below
-        });
-      },
-    }).then((response) => {
-      saveGraphToken(response, loadServerConfig());
-      console.error(`Graph API authentication completed for ${response.account?.username}`);
-    }).catch((e) => {
-      console.error(`Graph API authentication failed: ${e.message}`);
-    });
+  // Interactive sign-in (browser by default); resolves with the session the
+  // user has to act on, completion is handled in the background.
+  return beginSignIn("graph", pca, GRAPH_SCOPES, (response) => {
+    saveGraphToken(response, loadServerConfig());
+    console.error(`Graph API authentication completed for ${response.account?.username}`);
   });
 }
 
@@ -530,6 +736,7 @@ function saveGraphToken(response, config) {
 
   cachedGraphToken = response.accessToken;
   cachedGraphTokenExpiry = response.expiresOn;
+  clearSignInRequired("graph");
 }
 
 /**
@@ -921,7 +1128,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   // Always include auth tool so users can authenticate/re-authenticate
   allTools.unshift({
     name: "agent365_authenticate",
-    description: "Start Microsoft 365 authentication. Call this if tools return auth errors. Returns a device code and URL for the user to authenticate in their browser. Call agent365_help for workflow guidance.",
+    description: "Start Microsoft 365 authentication. Call this if tools return auth errors. Opens a browser window for the user to sign in (or returns a device code if AGENT365_AUTH_FLOW=device_code). Call agent365_help for workflow guidance.",
     inputSchema: { type: "object", properties: {} },
   });
 
@@ -973,7 +1180,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   // Built-in tool: authenticate with Microsoft Graph API for advanced features
   allTools.push({
     name: "agent365_graph_auth",
-    description: "Authenticate with Microsoft Graph API for advanced features (large file upload >4MB, meeting transcripts). Only needed if those tools report auth errors. Uses device code flow.",
+    description: "Authenticate with Microsoft Graph API for advanced features (large file upload >4MB, meeting transcripts). Only needed if those tools report auth errors. Opens a browser window for sign-in (or uses a device code if AGENT365_AUTH_FLOW=device_code).",
     inputSchema: { type: "object", properties: {} },
   });
 
@@ -1107,7 +1314,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 // ============================================================================
-// IN-CHAT AUTHENTICATION (returns device code in tool result)
+// IN-CHAT AUTHENTICATION (opens browser sign-in; device code only if opted in)
 // ============================================================================
 
 let pendingAuthPromise = null;
@@ -1173,7 +1380,6 @@ Tool list has been refreshed. The agent365_* tools (SharePoint, Excel, Word, Tea
     };
   }
 
-  // Start device code flow
   const pca = new PublicClientApplication({
     auth: {
       clientId: config.clientId,
@@ -1186,9 +1392,9 @@ Tool list has been refreshed. The agent365_* tools (SharePoint, Excel, Word, Tea
 
   const scopes = [`${AGENT365_API}/.default`];
 
-  // Try silent refresh first
+  // Try silent refresh first, unless Entra already rejected the saved session
   const accounts = await pca.getTokenCache().getAllAccounts();
-  if (accounts.length > 0) {
+  if (accounts.length > 0 && !isSignInRequired("agent365")) {
     try {
       const response = await pca.acquireTokenSilent({
         account: accounts[0],
@@ -1218,50 +1424,16 @@ Tool list has been refreshed. The agent365_* tools (SharePoint, Excel, Word, Tea
         }],
       };
     } catch (e) {
-      // Fall through to device code
+      if (needsFreshSignIn(e)) markSignInRequired("agent365", e);
+      // Fall through to interactive sign-in
     }
   }
 
-  // Device code flow - return the code to the user via tool result
-  return new Promise((resolve) => {
-    let deviceCode = null;
-    let verificationUrl = null;
-
-    const authPromise = pca.acquireTokenByDeviceCode({
-      scopes: scopes,
-      deviceCodeCallback: (response) => {
-        deviceCode = response.userCode;
-        verificationUrl = response.verificationUriComplete || response.verificationUri;
-
-        // Save code to file as backup
-        saveDeviceCodeToFile(deviceCode, response.verificationUri);
-
-        // Copy to clipboard
-        copyToClipboard(deviceCode);
-
-        // Return immediately with the code - don't wait for auth to complete
-        resolve({
-          content: [{
-            type: "text",
-            text: `🔐 **Microsoft 365 Authentication Required**
-
-**Your code: \`${deviceCode}\`** (copied to clipboard)
-
-**Steps for user:**
-1. Go to: ${verificationUrl}
-2. Enter the code: **${deviceCode}**
-3. Sign in with your Microsoft account
-
-**For agent:** After the user confirms they've completed login, call \`agent365_authenticate\` again to verify authentication succeeded. The tool will return "Already Authenticated" or "Token Refreshed" when successful.
-
-The code expires in 15 minutes.`,
-          }],
-        });
-      },
-    });
-
-    // Handle auth completion in background
-    authPromise.then(async (response) => {
+  // Interactive sign-in (browser by default). Return as soon as the user has
+  // something to act on; completion is handled in the background.
+  let session;
+  try {
+    session = await beginSignIn("agent365", pca, scopes, async (response) => {
       saveToken(response, config);
       console.error(`✅ Authentication completed for ${response.account?.username}`);
 
@@ -1276,10 +1448,27 @@ The code expires in 15 minutes.`,
       } catch (e) {
         console.error(`Could not notify client of tool list change: ${e.message}`);
       }
-    }).catch((e) => {
-      console.error(`❌ Authentication failed: ${e.message}`);
     });
-  });
+  } catch (e) {
+    return {
+      content: [{
+        type: "text",
+        text: `❌ **Could not start Microsoft 365 sign-in:** ${e.message}`,
+      }],
+      isError: true,
+    };
+  }
+
+  return {
+    content: [{
+      type: "text",
+      text: `🔐 **Microsoft 365 Authentication Required**
+
+${signInInstructions(session, "agent365_authenticate")}
+
+The tool will return "Already Authenticated" or "Token Refreshed" when successful.`,
+    }],
+  };
 }
 
 // ============================================================================
@@ -1567,7 +1756,7 @@ function handleHelp(args) {
 
   const sections = {
     auth: `## Authentication (required once per session)
-- agent365_authenticate() → triggers device code login
+- agent365_authenticate() → opens browser sign-in (device code only with AGENT365_AUTH_FLOW=device_code)
 - agent365_graph_auth() → separate auth for advanced features (large uploads >4MB, meeting transcripts)`,
 
     sharepoint: `## SharePoint / OneDrive — Finding Files
@@ -1899,7 +2088,6 @@ async function handleGraphAuth() {
     };
   }
 
-  // Start device code flow for Graph scopes
   const pca = new PublicClientApplication({
     auth: {
       clientId: config.clientId,
@@ -1910,9 +2098,9 @@ async function handleGraphAuth() {
     },
   });
 
-  // Try silent auth first
+  // Try silent auth first, unless Entra already rejected the saved session
   const accounts = await pca.getTokenCache().getAllAccounts();
-  if (accounts.length > 0) {
+  if (accounts.length > 0 && !isSignInRequired("graph")) {
     try {
       const response = await pca.acquireTokenSilent({
         account: accounts[0],
@@ -1926,58 +2114,38 @@ async function handleGraphAuth() {
         }],
       };
     } catch (e) {
-      // Fall through to device code
+      if (needsFreshSignIn(e)) markSignInRequired("graph", e);
+      // Fall through to interactive sign-in
     }
   }
 
-  // Device code flow
-  return new Promise((resolve) => {
-    let resolved = false;
-
-    const authPromise = pca.acquireTokenByDeviceCode({
-      scopes: GRAPH_SCOPES,
-      deviceCodeCallback: (response) => {
-        const deviceCode = response.userCode;
-        const verificationUrl = response.verificationUriComplete || response.verificationUri;
-
-        saveDeviceCodeToFile(deviceCode, response.verificationUri);
-        copyToClipboard(deviceCode);
-
-        resolved = true;
-        resolve({
-          content: [{
-            type: "text",
-            text: `Microsoft Graph API Authentication Required\n\nYour code: ${deviceCode} (copied to clipboard)\n\nSteps for user:\n1. Go to: ${verificationUrl}\n2. Enter the code: ${deviceCode}\n3. Sign in with your Microsoft account\n4. Approve the additional permissions (Files.ReadWrite.All, Sites.ReadWrite.All, OnlineMeetings.Read, OnlineMeetingTranscript.Read.All)\n\nFor agent: After the user confirms login, call agent365_graph_auth again to verify. This enables large file upload (>4MB) and meeting transcript retrieval.\n\nThe code expires in 15 minutes.`,
-          }],
-        });
-      },
+  // Interactive sign-in (browser by default)
+  let session;
+  try {
+    session = await beginSignIn("graph", pca, GRAPH_SCOPES, (response) => {
+      saveGraphToken(response, loadServerConfig());
+      console.error(`Graph API authentication completed for ${response.account?.username}`);
     });
+  } catch (e) {
+    return {
+      content: [{
+        type: "text",
+        text: `Could not start Microsoft Graph sign-in: ${e.message}`,
+      }],
+      isError: true,
+    };
+  }
 
-    // Handle completion in background
-    if (authPromise && typeof authPromise.then === "function") {
-      authPromise.then((response) => {
-        saveGraphToken(response, loadServerConfig());
-        console.error(`Graph API authentication completed for ${response.account?.username}`);
-      }).catch((e) => {
-        console.error(`Graph API authentication failed: ${e.message}`);
-      });
-    }
+  return {
+    content: [{
+      type: "text",
+      text: `Microsoft Graph API Authentication Required
 
-    // If deviceCodeCallback was not called (e.g., MSAL error), resolve with a fallback
-    if (!resolved) {
-      // Give a short delay for the callback to fire
-      setTimeout(() => {
-        if (!resolved) {
-          resolve({
-            content: [{
-              type: "text",
-              text: "Graph API authentication initiated. If no device code appeared, try running agent365_authenticate first, then retry agent365_graph_auth.",
-            }],
-          });
-        }
-      }, 1000);
-    }
-  });
+${signInInstructions(session, "agent365_graph_auth")}
+
+When signing in, approve the additional permissions (${GRAPH_SCOPES.join(", ")}). This enables large file upload (>4MB) and meeting transcript retrieval.`,
+    }],
+  };
 }
 
 // ============================================================================
@@ -2020,23 +2188,32 @@ function loadServerConfig() {
 }
 
 function openBrowser(url) {
-  const { exec } = require("child_process");
+  // Spawn without a shell so characters in the URL (&, ", %) are passed as-is.
+  const { spawn } = require("child_process");
   const platform = process.platform;
 
   let cmd;
+  let args;
   if (platform === "darwin") {
-    cmd = `open "${url}"`;
+    cmd = "open";
+    args = [url];
   } else if (platform === "win32") {
-    cmd = `start "" "${url}"`;
+    cmd = "rundll32";
+    args = ["url.dll,FileProtocolHandler", url];
   } else {
-    cmd = `xdg-open "${url}"`;
+    cmd = "xdg-open";
+    args = [url];
   }
 
-  exec(cmd, (err) => {
-    if (err) {
+  try {
+    const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+    child.on("error", () => {
       console.error(`Could not open browser automatically. Please visit: ${url}`);
-    }
-  });
+    });
+    child.unref();
+  } catch (e) {
+    console.error(`Could not open browser automatically. Please visit: ${url}`);
+  }
 }
 
 function copyToClipboard(text) {
@@ -2096,7 +2273,7 @@ async function autoAuthenticate(config) {
 
   // Try silent auth first (if we have cached refresh token)
   const accounts = await pca.getTokenCache().getAllAccounts();
-  if (accounts.length > 0) {
+  if (accounts.length > 0 && !isSignInRequired("agent365")) {
     try {
       console.error(`Found existing session for ${accounts[0].username}, refreshing...`);
       const response = await pca.acquireTokenSilent({
@@ -2109,39 +2286,27 @@ async function autoAuthenticate(config) {
       console.error("✅ Token refreshed successfully!\n");
       return true;
     } catch (e) {
+      if (needsFreshSignIn(e)) markSignInRequired("agent365", e);
       console.error("Silent refresh failed, starting interactive login...\n");
     }
   }
 
-  // Device code flow with auto-browser open
+  // Interactive sign-in (browser by default); wait for it to complete
   try {
-    const response = await pca.acquireTokenByDeviceCode({
-      scopes: scopes,
-      deviceCodeCallback: (deviceCodeResponse) => {
-        const code = deviceCodeResponse.userCode;
-        const url = deviceCodeResponse.verificationUri;
-        // Use complete URL if available (has code pre-filled)
-        const completeUrl = deviceCodeResponse.verificationUriComplete || url;
+    const session = await startInteractiveSignIn(pca, scopes);
+    console.error("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    console.error("🔐 AUTHENTICATION REQUIRED");
+    console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    if (session.flow === "device_code") {
+      console.error(`\n  Your code: ${session.userCode}  (copied to clipboard)`);
+      console.error(`  Go to: ${session.url}\n`);
+    } else {
+      console.error("\n  A browser window has opened for Microsoft sign-in.");
+      console.error(`  If it didn't open, visit this link on this computer:\n  ${session.url}\n`);
+    }
+    console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-        // Save code to file for easy access
-        const codePath = saveDeviceCodeToFile(code, url);
-
-        // Copy code to clipboard
-        copyToClipboard(code);
-
-        console.error("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        console.error("📱 AUTHENTICATION REQUIRED");
-        console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        console.error(`\n  Your code: ${code}  (copied to clipboard)\n`);
-        console.error(`  Code also saved to: ${codePath}\n`);
-        console.error("  Opening browser automatically...");
-        console.error("  If prompted, enter the code above.\n");
-        console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-
-        // Auto-open browser with complete URL (includes code if supported)
-        openBrowser(completeUrl);
-      },
-    });
+    const response = await session.done;
 
     // Save token with config embedded
     saveToken(response, config);
@@ -2182,6 +2347,7 @@ function saveToken(response, config) {
   // Update in-memory cache
   cachedToken = response.accessToken;
   cachedTokenExpiry = response.expiresOn;
+  clearSignInRequired("agent365");
 }
 
 async function ensureAuthenticated() {
@@ -2269,7 +2435,26 @@ if (typeof module !== "undefined" && module.exports) {
     uploadLargeFile,
     handleGetMeetingTranscript,
     handleGraphAuth,
+    // Sign-in
+    handleAuthenticate,
+    startInteractiveSignIn,
+    beginSignIn,
+    signInInstructions,
+    needsFreshSignIn,
+    isSignInRequired,
+    markSignInRequired,
+    clearSignInRequired,
+    loadToken,
+    SIGN_IN_REQUIRED_PATH,
+    AUTH_FLOW,
     // Test helpers
+    _resetPendingSignIns: () => {
+      Object.keys(pendingSignIns).forEach((key) => delete pendingSignIns[key]);
+    },
+    _resetTokenCache: () => {
+      cachedToken = null;
+      cachedTokenExpiry = null;
+    },
     _resetGraphTokenCache: () => {
       cachedGraphToken = null;
       cachedGraphTokenExpiry = null;

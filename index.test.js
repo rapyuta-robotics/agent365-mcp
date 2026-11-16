@@ -12,14 +12,23 @@
 // Mock MSAL
 const mockAcquireTokenSilent = jest.fn();
 const mockAcquireTokenByDeviceCode = jest.fn();
+const mockAcquireTokenInteractive = jest.fn();
 const mockGetAllAccounts = jest.fn().mockResolvedValue([]);
 const mockPCA = {
   acquireTokenSilent: mockAcquireTokenSilent,
   acquireTokenByDeviceCode: mockAcquireTokenByDeviceCode,
+  acquireTokenInteractive: mockAcquireTokenInteractive,
   getTokenCache: () => ({ getAllAccounts: mockGetAllAccounts }),
 };
 jest.mock("@azure/msal-node", () => ({
   PublicClientApplication: jest.fn(() => mockPCA),
+}));
+
+// Mock child_process so tests never open a real browser or touch the clipboard
+const mockSpawn = jest.fn(() => ({ on: jest.fn(), unref: jest.fn() }));
+jest.mock("child_process", () => ({
+  spawn: (...args) => mockSpawn(...args),
+  exec: jest.fn(),
 }));
 
 // Mock MCP SDK
@@ -637,5 +646,195 @@ describe("Upload tool description", () => {
     expect(tool).toBeDefined();
     // Should mention support for larger files, not just "Maximum file size: 4MB"
     expect(tool.description).toMatch(/250/);
+  });
+});
+
+// ============================================================================
+// BROWSER SIGN-IN AND SIGN-IN-REQUIRED MARKER
+// ============================================================================
+
+describe("Browser sign-in", () => {
+  const HOME = process.env.HOME || process.env.USERPROFILE || "";
+  const agentDir = path.join(HOME, ".agent365-mcp");
+  const tokenPath = path.join(agentDir, "tokens.json");
+  const graphTokenPath = path.join(agentDir, "graph-tokens.json");
+
+  const fakeResponse = {
+    accessToken: "new-access-token",
+    expiresOn: new Date(Date.now() + 3600 * 1000).toISOString(),
+    account: { username: "user@example.com" },
+  };
+
+  // Simulate MSAL: open the browser, then finish sign-in when `finish()` is called
+  function interactiveThatWaits() {
+    let finish;
+    let fail;
+    mockAcquireTokenInteractive.mockImplementationOnce(async (request) => {
+      await request.openBrowser("https://login.microsoftonline.com/test/oauth2/v2.0/authorize?client_id=x&state=y");
+      return new Promise((resolve, reject) => {
+        finish = () => resolve(fakeResponse);
+        fail = (e) => reject(e);
+      });
+    });
+    return { finish: () => finish(), fail: (e) => fail(e) };
+  }
+
+  function cleanup() {
+    for (const p of [tokenPath, graphTokenPath, graphExports.SIGN_IN_REQUIRED_PATH]) {
+      try { fs.unlinkSync(p); } catch (e) { /* ignore */ }
+    }
+  }
+
+  beforeEach(() => {
+    cleanup();
+    mockAcquireTokenInteractive.mockReset();
+    mockAcquireTokenByDeviceCode.mockReset();
+    mockAcquireTokenSilent.mockReset();
+    mockGetAllAccounts.mockReset();
+    mockGetAllAccounts.mockResolvedValue([]);
+    mockSpawn.mockClear();
+    graphExports._resetPendingSignIns();
+    graphExports._resetTokenCache();
+    graphExports._resetGraphTokenCache();
+  });
+
+  afterAll(cleanup);
+
+  test("browser is the default sign-in flow", () => {
+    expect(graphExports.AUTH_FLOW).toBe("browser");
+  });
+
+  test("startInteractiveSignIn opens the browser without a shell and never uses device code", async () => {
+    const sim = interactiveThatWaits();
+    const session = await graphExports.startInteractiveSignIn(mockPCA, ["scope"]);
+
+    expect(session.flow).toBe("browser");
+    expect(session.url).toContain("login.microsoftonline.com");
+    expect(mockAcquireTokenByDeviceCode).not.toHaveBeenCalled();
+    expect(mockAcquireTokenInteractive).toHaveBeenCalledWith(
+      expect.objectContaining({ scopes: ["scope"], openBrowser: expect.any(Function) })
+    );
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    const [cmd, args, opts] = mockSpawn.mock.calls[0];
+    expect(["xdg-open", "open", "rundll32"]).toContain(cmd);
+    expect(args[args.length - 1]).toBe(session.url);
+    expect(opts.shell).toBeUndefined();
+
+    sim.finish();
+    await expect(session.done).resolves.toBe(fakeResponse);
+  });
+
+  test("startInteractiveSignIn uses device code only when asked for", async () => {
+    mockAcquireTokenByDeviceCode.mockImplementationOnce(async (request) => {
+      request.deviceCodeCallback({ userCode: "ABCD1234", verificationUri: "https://microsoft.com/devicelogin" });
+      return fakeResponse;
+    });
+    const session = await graphExports.startInteractiveSignIn(mockPCA, ["scope"], "device_code");
+
+    expect(session.flow).toBe("device_code");
+    expect(session.userCode).toBe("ABCD1234");
+    expect(mockAcquireTokenInteractive).not.toHaveBeenCalled();
+  });
+
+  test("startInteractiveSignIn rejects when the flow fails before it starts", async () => {
+    mockAcquireTokenInteractive.mockRejectedValueOnce(new Error("loopback failed"));
+    await expect(graphExports.startInteractiveSignIn(mockPCA, ["scope"])).rejects.toThrow("loopback failed");
+  });
+
+  test("beginSignIn reuses a pending sign-in instead of opening another window", async () => {
+    const sim = interactiveThatWaits();
+    const first = await graphExports.beginSignIn("agent365", mockPCA, ["scope"], jest.fn());
+    const second = await graphExports.beginSignIn("agent365", mockPCA, ["scope"], jest.fn());
+
+    expect(second).toBe(first);
+    expect(mockAcquireTokenInteractive).toHaveBeenCalledTimes(1);
+    sim.finish();
+    await first.done;
+  });
+
+  test("handleAuthenticate returns browser instructions and saves the token when sign-in completes", async () => {
+    const sim = interactiveThatWaits();
+    const result = await graphExports.handleAuthenticate();
+    const text = result.content[0].text;
+
+    expect(result.isError).toBeUndefined();
+    expect(text).toContain("browser window");
+    expect(text).toContain("login.microsoftonline.com");
+    expect(text).not.toContain("Your code");
+    expect(mockAcquireTokenByDeviceCode).not.toHaveBeenCalled();
+
+    sim.finish();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const saved = JSON.parse(fs.readFileSync(tokenPath, "utf8"));
+    expect(saved.accessToken).toBe("new-access-token");
+  });
+
+  test("handleGraphAuth returns browser instructions", async () => {
+    const sim = interactiveThatWaits();
+    const result = await graphExports.handleGraphAuth();
+    const text = result.content[0].text;
+
+    expect(text).toContain("browser window");
+    expect(text).toContain("Files.ReadWrite.All");
+    expect(mockAcquireTokenByDeviceCode).not.toHaveBeenCalled();
+    sim.finish();
+  });
+
+  test("needsFreshSignIn matches rejected refresh tokens but not transient errors", () => {
+    expect(graphExports.needsFreshSignIn({ errorCode: "invalid_grant" })).toBe(true);
+    expect(graphExports.needsFreshSignIn({ name: "InteractionRequiredAuthError" })).toBe(true);
+    expect(graphExports.needsFreshSignIn({ errorCode: "network_error" })).toBe(false);
+    expect(graphExports.needsFreshSignIn(undefined)).toBe(false);
+  });
+
+  test("loadToken stops retrying silent refresh after Entra rejects the session", async () => {
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(tokenPath, JSON.stringify({
+      accessToken: "expired",
+      expiresOn: new Date(Date.now() - 3600 * 1000).toISOString(),
+      tenantId: "test-tenant",
+      clientId: "test-client",
+    }));
+    mockGetAllAccounts.mockResolvedValue([{ username: "user@example.com" }]);
+    const rejected = Object.assign(new Error("invalid_grant: AADSTS50173: The provided grant has expired"), { errorCode: "invalid_grant" });
+    mockAcquireTokenSilent.mockRejectedValue(rejected);
+
+    expect(await graphExports.loadToken()).toBeNull();
+    expect(mockAcquireTokenSilent).toHaveBeenCalledTimes(1);
+    expect(graphExports.isSignInRequired("agent365")).toBe(true);
+
+    // A later call (or a new server process) must not hit Entra again
+    expect(await graphExports.loadToken()).toBeNull();
+    expect(mockAcquireTokenSilent).toHaveBeenCalledTimes(1);
+  });
+
+  test("a transient refresh error does not block later retries", async () => {
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(tokenPath, JSON.stringify({
+      accessToken: "expired",
+      expiresOn: new Date(Date.now() - 3600 * 1000).toISOString(),
+      tenantId: "test-tenant",
+      clientId: "test-client",
+    }));
+    mockGetAllAccounts.mockResolvedValue([{ username: "user@example.com" }]);
+    mockAcquireTokenSilent.mockRejectedValue(Object.assign(new Error("ENOTFOUND"), { errorCode: "network_error" }));
+
+    await graphExports.loadToken();
+    await graphExports.loadToken();
+    expect(mockAcquireTokenSilent).toHaveBeenCalledTimes(2);
+    expect(graphExports.isSignInRequired("agent365")).toBe(false);
+  });
+
+  test("a completed sign-in clears the sign-in-required marker", async () => {
+    graphExports.markSignInRequired("agent365", { errorCode: "invalid_grant" });
+    expect(graphExports.isSignInRequired("agent365")).toBe(true);
+
+    const sim = interactiveThatWaits();
+    await graphExports.handleAuthenticate();
+    sim.finish();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(graphExports.isSignInRequired("agent365")).toBe(false);
+    expect(mockAcquireTokenSilent).not.toHaveBeenCalled();
   });
 });

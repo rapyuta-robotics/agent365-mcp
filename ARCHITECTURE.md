@@ -64,15 +64,16 @@ Tools are prefixed to avoid collisions:
      │                  │                   │                    │
      │ npx auth         │                   │                    │
      │─────────────────►│                   │                    │
-     │                  │ Device code req   │                    │
-     │                  │──────────────────►│                    │
-     │                  │ Code + URL        │                    │
-     │                  │◄──────────────────│                    │
-     │ Visit URL        │                   │                    │
+     │                  │ Start localhost   │                    │
+     │                  │ listener + PKCE   │                    │
+     │ Browser opens    │                   │                    │
      │◄─────────────────│                   │                    │
      │ Sign in          │                   │                    │
      │─────────────────────────────────────►│                    │
-     │                  │ Poll for token    │                    │
+     │                  │ Redirect to       │                    │
+     │                  │ localhost w/ code │                    │
+     │                  │◄──────────────────│                    │
+     │                  │ Code → token      │                    │
      │                  │──────────────────►│                    │
      │                  │ Access token      │                    │
      │                  │◄──────────────────│                    │
@@ -84,6 +85,7 @@ Tools are prefixed to avoid collisions:
 Token storage:
 - Primary: `~/.agent365-mcp/tokens.json`
 - Legacy: `~/.claude/agent365-tokens.json`
+- Sign-in required marker: `~/.agent365-mcp/sign-in-required.json`. Written when Entra rejects the refresh token (`invalid_grant` or interaction required), so new server processes skip silent refresh until the user signs in again. Removed on successful sign-in or `logout`.
 
 ### Request Flow
 

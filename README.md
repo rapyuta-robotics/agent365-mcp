@@ -187,6 +187,8 @@ npx github:rapyuta-robotics/agent365-mcp status
 npx github:rapyuta-robotics/agent365-mcp auth
 ```
 
+Sign-in opens your browser and returns to a temporary `http://localhost` address on your machine. On a machine with no local browser (for example over SSH), use `auth --device-code` instead, if your tenant allows device-code sign-in.
+
 ## IT Admin Setup
 
 See **[ADMIN.md](ADMIN.md)** for detailed setup instructions.
@@ -255,6 +257,7 @@ Optional environment variables to customize behavior:
 | `AGENT365_LARGE_FILE_THRESHOLD` | `100000` | Size threshold for file save |
 | `AGENT365_ALLOW_DANGEROUS` | `false` | Enable dangerous tools (delete/remove) |
 | `AGENT365_DISABLED_SERVERS` | (none) | Comma-separated servers to disable |
+| `AGENT365_AUTH_FLOW` | `browser` | Sign-in flow: `browser` (opens your browser) or `device_code` (only for machines without a local browser; many tenants block it) |
 
 ### Large Response Handling
 
@@ -318,6 +321,9 @@ Token expired or not authenticated. Run:
 ```bash
 npx github:rapyuta-robotics/agent365-mcp auth
 ```
+
+### "Skipping silent refresh: Entra rejected the saved session"
+Entra refused the saved session (for example after a password reset, revoked sessions, or expired MFA). The server stops retrying in the background so it doesn't flood the sign-in logs with failures. Sign in again with `agent365_authenticate` or `npx github:rapyuta-robotics/agent365-mcp auth`.
 
 ### Tools not loading
 1. Check status: `npx github:rapyuta-robotics/agent365-mcp status`

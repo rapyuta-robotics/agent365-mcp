@@ -71,10 +71,10 @@ az ad app create \
 APP_ID=$(az ad app list --display-name "Agent 365 MCP" --query "[0].appId" -o tsv)
 echo "Your App ID: $APP_ID"
 
-# Enable public client flows (required for device code auth)
+# Enable public client flows (required for desktop sign-in)
 az ad app update --id $APP_ID --is-fallback-public-client true
 
-# Add localhost redirect URI for device code flow
+# Add localhost redirect URI (required for browser sign-in, the default flow)
 az ad app update --id $APP_ID \
   --public-client-redirect-uris "http://localhost"
 
