@@ -272,18 +272,22 @@ describe("Upload size constants", () => {
 });
 
 describe("handleUploadLocalFile - large file support", () => {
-  const testDir = path.join("/tmp", "agent365-test-uploads");
+  const os = require("os");
+  let testDir;
   let originalHttpsRequest;
+  let originalUploadRoots;
 
   beforeEach(() => {
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
+    testDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent365-test-uploads-")));
+    originalUploadRoots = process.env.AGENT365_UPLOAD_ROOTS;
+    process.env.AGENT365_UPLOAD_ROOTS = testDir;
     originalHttpsRequest = https.request;
   });
 
   afterEach(() => {
     https.request = originalHttpsRequest;
+    if (originalUploadRoots === undefined) delete process.env.AGENT365_UPLOAD_ROOTS;
+    else process.env.AGENT365_UPLOAD_ROOTS = originalUploadRoots;
     // Clean up test files
     try {
       const files = fs.readdirSync(testDir);
@@ -359,6 +363,22 @@ describe("handleUploadLocalFile - large file support", () => {
       expect(result.content[0].text).not.toMatch(/File too large/);
     } finally {
       fs.statSync = originalStatSync;
+    }
+  });
+
+  test("refuses a file outside the allowed upload directories", async () => {
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent365-outside-")));
+    const testFile = path.join(outside, "notes.txt");
+    fs.writeFileSync(testFile, "x");
+    try {
+      const result = await graphExports.handleUploadLocalFile({
+        localFilePath: testFile,
+        documentLibraryId: "test-drive-id",
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/outside the allowed upload directories/);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 });
@@ -836,5 +856,68 @@ describe("Browser sign-in", () => {
 
     expect(graphExports.isSignInRequired("agent365")).toBe(false);
     expect(mockAcquireTokenSilent).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// UPLOAD SESSION REQUESTS
+// ============================================================================
+
+describe("makeUploadSessionRequest", () => {
+  let originalHttpsRequest;
+
+  beforeEach(() => {
+    originalHttpsRequest = https.request;
+    graphExports._setGraphTokenCache(
+      "test-graph-token-upload",
+      new Date(Date.now() + 3600 * 1000).toISOString(),
+    );
+  });
+
+  afterEach(() => {
+    https.request = originalHttpsRequest;
+    graphExports._resetGraphTokenCache();
+  });
+
+  test("sends no Authorization header to the upload session host", async () => {
+    let capturedOptions;
+    https.request = jest.fn((options, callback) => {
+      capturedOptions = options;
+      const res = new PassThrough();
+      res.statusCode = 202;
+      callback(res);
+      res.end("{}");
+      const req = new EventEmitter();
+      req.write = jest.fn();
+      req.end = jest.fn();
+      req.setTimeout = jest.fn();
+      req.destroy = jest.fn();
+      return req;
+    });
+
+    const result = await graphExports.makeUploadSessionRequest(
+      "PUT",
+      "https://contoso.sharepoint.com/_api/v2.0/drives/d/items/i/uploadSession?guid=1&tempauth=abc",
+      Buffer.from("chunk"),
+      { "Content-Range": "bytes 0-4/5", Authorization: "Bearer must-not-be-sent" },
+    );
+
+    expect(result.statusCode).toBe(202);
+    expect(capturedOptions.hostname).toBe("contoso.sharepoint.com");
+    const headerNames = Object.keys(capturedOptions.headers).map((h) => h.toLowerCase());
+    expect(headerNames).not.toContain("authorization");
+    expect(JSON.stringify(capturedOptions)).not.toContain("test-graph-token-upload");
+  });
+
+  test("makes no request to a host that is not a Microsoft upload host", async () => {
+    https.request = jest.fn();
+    const result = await graphExports.makeUploadSessionRequest(
+      "PUT",
+      "https://attacker.example/upload",
+      Buffer.from("chunk"),
+      {},
+    );
+    expect(result.error).toMatch(/not an expected Microsoft host/);
+    expect(https.request).not.toHaveBeenCalled();
   });
 });

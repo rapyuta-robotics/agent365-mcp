@@ -18,6 +18,7 @@ const {
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
+const { resolveUploadPath, checkUploadUrl } = require("./upload-guard");
 
 // ============================================================================
 // CONFIGURATION
@@ -814,25 +815,29 @@ async function makeGraphRequest(method, urlPath, body, extraHeaders) {
 }
 
 /**
- * Make a raw HTTPS request (for chunked uploads where we need to send binary data).
+ * Send binary data to an upload session URL.
+ * The URL is pre-authenticated, so the request carries no Authorization header.
  * Returns { statusCode, data } or { error }.
  */
-async function makeGraphRawRequest(method, url, bodyBuffer, headers) {
-  const token = await loadGraphToken();
-  if (!token) {
-    return { error: "No Graph API token available." };
+async function makeUploadSessionRequest(method, url, bodyBuffer, headers) {
+  let parsedUrl;
+  try {
+    parsedUrl = checkUploadUrl(url);
+  } catch (e) {
+    return { error: e.message };
   }
 
   return new Promise((resolve) => {
-    const parsedUrl = new URL(url);
+    const safeHeaders = {};
+    for (const [key, value] of Object.entries(headers || {})) {
+      if (key.toLowerCase() !== "authorization") safeHeaders[key] = value;
+    }
     const options = {
       hostname: parsedUrl.hostname,
+      port: parsedUrl.port || undefined,
       path: parsedUrl.pathname + parsedUrl.search,
       method: method,
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        ...headers,
-      },
+      headers: safeHeaders,
     };
 
     if (bodyBuffer) {
@@ -1141,7 +1146,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       properties: {
         localFilePath: {
           type: "string",
-          description: "Absolute path to the local file to upload (e.g. /home/user/report.docx)",
+          description: "Path to the local file to upload. It must be inside the working directory, or a directory listed in AGENT365_UPLOAD_ROOTS.",
         },
         documentLibraryId: {
           type: "string",
@@ -1497,14 +1502,15 @@ async function handleUploadLocalFile(args) {
     };
   }
 
-  // Resolve and validate file path
-  const resolvedPath = path.resolve(localFilePath);
-  if (!fs.existsSync(resolvedPath)) {
+  // Resolve symlinks, then allow only files under an upload root and never HOME dot-directories.
+  const allowed = resolveUploadPath(localFilePath);
+  if (allowed.error) {
     return {
-      content: [{ type: "text", text: `Error: File not found: ${resolvedPath}` }],
+      content: [{ type: "text", text: `Error: ${allowed.error}` }],
       isError: true,
     };
   }
+  const resolvedPath = allowed.path;
 
   const stats = fs.statSync(resolvedPath);
   if (!stats.isFile()) {
@@ -1692,7 +1698,7 @@ async function uploadLargeFile(resolvedPath, uploadFilename, documentLibraryId, 
 
         console.error(`Uploading chunk: ${contentRange} (${(chunkSize / 1024).toFixed(0)}KB)`);
 
-        const chunkResult = await makeGraphRawRequest("PUT", uploadUrl, chunk, {
+        const chunkResult = await makeUploadSessionRequest("PUT", uploadUrl, chunk, {
           "Content-Range": contentRange,
           "Content-Type": "application/octet-stream",
         });
@@ -2433,6 +2439,7 @@ if (typeof module !== "undefined" && module.exports) {
     // Feature handlers
     handleUploadLocalFile,
     uploadLargeFile,
+    makeUploadSessionRequest,
     handleGetMeetingTranscript,
     handleGraphAuth,
     // Sign-in
