@@ -222,12 +222,12 @@ USAGE:
   agent365-mcp logout            Remove saved authentication
 
 QUICK START:
-  npx github:rapyuta-robotics/agent365-mcp setup
+  npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 setup
 
 AUTHENTICATION:
   Before using, authenticate with your Microsoft 365 account:
 
-    npx github:rapyuta-robotics/agent365-mcp auth
+    npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth
 
 MCP CLIENT CONFIGURATION:
   Add to your MCP client config:
@@ -239,7 +239,7 @@ MCP CLIENT CONFIGURATION:
       "agent365": {
         "type": "stdio",
         "command": "npx",
-        "args": ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
+        "args": ["-y", "github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300", "serve"],
         "env": {
           "AGENT365_TENANT_ID": "<your-tenant-id>",
           "AGENT365_CLIENT_ID": "<your-client-id>"
@@ -255,7 +255,7 @@ MCP CLIENT CONFIGURATION:
       "agent365": {
         "type": "stdio",
         "command": "npx",
-        "args": ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
+        "args": ["-y", "github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300", "serve"],
         "env": {
           "AGENT365_TENANT_ID": "<your-tenant-id>",
           "AGENT365_CLIENT_ID": "<your-client-id>"
@@ -369,7 +369,7 @@ function getMcpServerConfig(tenantId, clientId) {
   return {
     type: "stdio",
     command: "npx",
-    args: ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
+    args: ["-y", "github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300", "serve"],
     env: {
       AGENT365_TENANT_ID: tenantId,
       AGENT365_CLIENT_ID: clientId,
@@ -495,7 +495,7 @@ Next steps:
   1. Restart your coding assistant (Claude Code, VS Code, etc.)
   2. The agent365 tools will be available automatically
 
-To verify: npx github:rapyuta-robotics/agent365-mcp status
+To verify: npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 status
 
 Your session is valid for ~90 days before re-authentication is needed.
 `);

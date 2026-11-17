@@ -205,7 +205,7 @@ Use more specific queries or enable `AGENT365_LARGE_FILE_DIR`.
 
 User needs to re-authenticate:
 ```bash
-npx github:rapyuta-robotics/agent365-mcp auth
+npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth
 ```
 
 ## Skills Integration
@@ -250,7 +250,7 @@ When working with Agent 365, consider using these skills:
 
 ```bash
 # List all loaded tools
-npx github:rapyuta-robotics/agent365-mcp status
+npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 status
 ```
 
 ### Check Server Logs
