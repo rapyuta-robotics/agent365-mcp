@@ -11,7 +11,7 @@
       "homepage": "https://github.com/rapyuta-robotics/agent365-mcp",
       "documentation": "https://github.com/rapyuta-robotics/agent365-mcp#readme",
       "transport": "stdio",
-      "command": "npx -y github:rapyuta-robotics/agent365-mcp serve",
+      "command": "npx -y github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 serve",
       "requiredEnv": [
         "AGENT365_TENANT_ID",
         "AGENT365_CLIENT_ID"

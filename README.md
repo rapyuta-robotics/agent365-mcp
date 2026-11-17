@@ -45,7 +45,7 @@ Just add to your MCP config - authentication happens automatically on first use:
   "mcpServers": {
     "agent365": {
       "command": "npx",
-      "args": ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
+      "args": ["-y", "github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300", "serve"],
       "env": {
         "AGENT365_TENANT_ID": "your-tenant-id",
         "AGENT365_CLIENT_ID": "your-client-id"
@@ -62,7 +62,7 @@ On first use, your browser opens automatically for Microsoft login. That's it!
 Run the setup wizard which configures everything for you:
 
 ```bash
-npx github:rapyuta-robotics/agent365-mcp setup
+npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 setup
 ```
 
 This will:
@@ -90,7 +90,7 @@ If you don't have Entra access, ask your IT admin.
 ```bash
 export AGENT365_TENANT_ID="your-tenant-id"
 export AGENT365_CLIENT_ID="your-client-id"
-npx github:rapyuta-robotics/agent365-mcp auth
+npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth
 ```
 
 ### 2. Configure your MCP client
@@ -103,7 +103,7 @@ npx github:rapyuta-robotics/agent365-mcp auth
     "agent365": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
+      "args": ["-y", "github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300", "serve"],
       "env": {
         "AGENT365_TENANT_ID": "your-tenant-id",
         "AGENT365_CLIENT_ID": "your-client-id"
@@ -124,7 +124,7 @@ Add this to your MCP user config (`~/.vscode/mcp.json`):
   "servers": {
     "agent365": {
       "command": "npx",
-      "args": ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
+      "args": ["-y", "github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300", "serve"],
       "env": {
         "AGENT365_TENANT_ID": "your-tenant-id",
         "AGENT365_CLIENT_ID": "your-client-id"
@@ -139,7 +139,7 @@ Add this to your MCP user config (`~/.vscode/mcp.json`):
 1. `Ctrl+Shift+P` → `MCP: Add Server`
 2. Select: `Command (stdio)`
 3. Command: `npx`
-4. Args: `-y github:rapyuta-robotics/agent365-mcp serve`
+4. Args: `-y github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 serve`
 5. Name: `agent365`
 6. Scope: `User Settings` or `Workspace`
 7. Then edit config to add the `env` section above
@@ -157,7 +157,7 @@ Or: Open Claude Desktop → Settings → Developer → Edit Config
   "mcpServers": {
     "agent365": {
       "command": "npx",
-      "args": ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
+      "args": ["-y", "github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300", "serve"],
       "env": {
         "AGENT365_TENANT_ID": "your-tenant-id",
         "AGENT365_CLIENT_ID": "your-client-id"
@@ -178,13 +178,13 @@ Use similar MCP configuration in your editor's settings. Consult your editor's M
 ### Check Status
 
 ```bash
-npx github:rapyuta-robotics/agent365-mcp status
+npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 status
 ```
 
 ### Re-authenticate (when token expires)
 
 ```bash
-npx github:rapyuta-robotics/agent365-mcp auth
+npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth
 ```
 
 Sign-in opens your browser and returns to a temporary `http://localhost` address on your machine. On a machine with no local browser (for example over SSH), use `auth --device-code` instead, if your tenant allows device-code sign-in.
@@ -242,6 +242,10 @@ Provide users with:
 - Tokens stored locally in `~/.agent365-mcp/`
 - Tokens expire after 1 hour and auto-refresh on next use
 
+### Pinned install
+
+Every command in this repository's documentation and in the configuration that `setup` writes names one reviewed commit (`#<commit SHA>`), so a client runs that commit and not whatever `master` holds at launch. After a reviewed release, a follow-up pull request moves the SHA to the new `master` commit in `README.md`, `ADMIN.md`, `AGENTS.md`, `cli.js`, `index.js` and `package.json`. A client keeps the commit in its own configuration until someone updates that configuration.
+
 ## Configuration
 
 Optional environment variables to customize behavior:
@@ -294,7 +298,7 @@ The proxy also auto-detects license errors and gracefully disables affected serv
   "mcpServers": {
     "agent365": {
       "command": "npx",
-      "args": ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
+      "args": ["-y", "github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300", "serve"],
       "env": {
         "AGENT365_TENANT_ID": "your-tenant-id",
         "AGENT365_CLIENT_ID": "your-client-id",
@@ -313,20 +317,20 @@ The proxy also auto-detects license errors and gracefully disables affected serv
 ### "Scope not present" error
 Your token doesn't have the required permissions. Re-authenticate:
 ```bash
-npx github:rapyuta-robotics/agent365-mcp auth
+npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth
 ```
 
 ### "No valid token" error
 Token expired or not authenticated. Run:
 ```bash
-npx github:rapyuta-robotics/agent365-mcp auth
+npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth
 ```
 
 ### "Skipping silent refresh: Entra rejected the saved session"
-Entra refused the saved session (for example after a password reset, revoked sessions, or expired MFA). The server stops retrying in the background so it doesn't flood the sign-in logs with failures. Sign in again with `agent365_authenticate` or `npx github:rapyuta-robotics/agent365-mcp auth`.
+Entra refused the saved session (for example after a password reset, revoked sessions, or expired MFA). The server stops retrying in the background so it doesn't flood the sign-in logs with failures. Sign in again with `agent365_authenticate` or `npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth`.
 
 ### Tools not loading
-1. Check status: `npx github:rapyuta-robotics/agent365-mcp status`
+1. Check status: `npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 status`
 2. Verify Copilot license is assigned to your account
 3. Confirm Tenant ID (Entra Home) and Client ID (Home > App Registrations > Agent 365 MCP) in your config, or ask IT admin to verify admin consent if you don't have access
 

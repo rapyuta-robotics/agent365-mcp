@@ -566,7 +566,7 @@ async function loadToken() {
     return refreshedToken;
   }
 
-  console.error("No valid token found. Run: npx github:rapyuta-robotics/agent365-mcp auth");
+  console.error("No valid token found. Run: npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth");
   return null;
 }
 
@@ -882,7 +882,7 @@ async function makeGraphRawRequest(method, url, bodyBuffer, headers) {
 async function makeAgent365Request(serverUrl, method, params, id) {
   const token = await loadToken();
   if (!token) {
-    throw new Error("No valid token. Run: npx github:rapyuta-robotics/agent365-mcp auth");
+    throw new Error("No valid token. Run: npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth");
   }
 
   return new Promise((resolve, reject) => {
@@ -1306,7 +1306,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return {
       content: [{
         type: "text",
-        text: `Error calling ${name}: ${error.message}\n\nIf authentication expired, run: npx github:rapyuta-robotics/agent365-mcp auth`,
+        text: `Error calling ${name}: ${error.message}\n\nIf authentication expired, run: npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth`,
       }],
       isError: true,
     };
@@ -1335,7 +1335,7 @@ No Tenant ID or Client ID found. These must be set in your MCP config:
   "mcpServers": {
     "agent365": {
       "command": "npx",
-      "args": ["-y", "github:rapyuta-robotics/agent365-mcp", "serve"],
+      "args": ["-y", "github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300", "serve"],
       "env": {
         "AGENT365_TENANT_ID": "your-tenant-id",
         "AGENT365_CLIENT_ID": "your-client-id"
@@ -2374,7 +2374,7 @@ Option 1: Set environment variables in your MCP config:
   }
 
 Option 2: Run setup first:
-  npx github:rapyuta-robotics/agent365-mcp setup
+  npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 setup
 
 `);
     return false;

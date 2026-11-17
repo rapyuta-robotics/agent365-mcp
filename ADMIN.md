@@ -227,7 +227,7 @@ export AGENT365_TENANT_ID="<tenant-id-from-admin>"
 export AGENT365_CLIENT_ID="<client-id-from-admin>"
 
 # 2. Authenticate (one-time)
-npx github:rapyuta-robotics/agent365-mcp auth
+npx github:rapyuta-robotics/agent365-mcp#a58b6d6a917b8d49b90b9c234cd0225d48864300 auth
 
 # 3. Add to your MCP client config
 # See README.md for configuration examples
