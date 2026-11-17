@@ -42,6 +42,11 @@ function saveConfig(config) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
+function getGraphTokenPath() {
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  return path.join(home, ".agent365-mcp", "graph-tokens.json");
+}
+
 function getMsalCachePath() {
   const home = process.env.HOME || process.env.USERPROFILE || "";
   return path.join(home, ".agent365-mcp", "msal-cache.json");
@@ -333,6 +338,10 @@ function logout() {
   if (fs.existsSync(signInRequiredPath)) {
     fs.unlinkSync(signInRequiredPath);
   }
+  const graphTokenPath = getGraphTokenPath();
+  if (fs.existsSync(graphTokenPath)) {
+    fs.unlinkSync(graphTokenPath);
+  }
   console.log("✅ Logged out successfully. Tokens removed.");
 }
 
@@ -568,7 +577,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("❌ Error:", error.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("❌ Error:", error.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { logout };

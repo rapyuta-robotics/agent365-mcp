@@ -255,6 +255,7 @@ Optional environment variables to customize behavior:
 | `AGENT365_TIMEOUT` | `60000` | Request timeout in milliseconds |
 | `AGENT365_LARGE_FILE_DIR` | (none) | Directory to save large responses |
 | `AGENT365_LARGE_FILE_THRESHOLD` | `100000` | Size threshold for file save |
+| `AGENT365_UPLOAD_ROOTS` | working directory | Directories `sharepoint_uploadLocalFile` may read from, separated by `:` (`;` on Windows). Dot-directories in your home directory, such as `~/.ssh` and `~/.agent365-mcp`, are always refused |
 | `AGENT365_ALLOW_DANGEROUS` | `false` | Enable dangerous tools (delete/remove) |
 | `AGENT365_DISABLED_SERVERS` | (none) | Comma-separated servers to disable |
 | `AGENT365_AUTH_FLOW` | `browser` | Sign-in flow: `browser` (opens your browser) or `device_code` (only for machines without a local browser; many tenants block it) |

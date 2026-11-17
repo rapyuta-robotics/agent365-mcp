@@ -63,6 +63,7 @@
   "files": [
     "index.js",
     "cli.js",
+    "upload-guard.js",
     "README.md",
     "ADMIN.md",
     "AGENTS.md",
