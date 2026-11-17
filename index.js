@@ -18,6 +18,7 @@ const {
 const fs = require("fs");
 const path = require("path");
 const https = require("https");
+const { ensurePrivateDir, writePrivateFile, tightenStateDir } = require("./secure-fs");
 
 // ============================================================================
 // CONFIGURATION
@@ -273,13 +274,13 @@ function writeSignInRequired(data) {
   try {
     const dir = path.dirname(SIGN_IN_REQUIRED_PATH);
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+      ensurePrivateDir(dir);
     }
     if (Object.keys(data).length === 0) {
       if (fs.existsSync(SIGN_IN_REQUIRED_PATH)) fs.unlinkSync(SIGN_IN_REQUIRED_PATH);
       return;
     }
-    fs.writeFileSync(SIGN_IN_REQUIRED_PATH, JSON.stringify(data, null, 2), { mode: 0o600 });
+    writePrivateFile(SIGN_IN_REQUIRED_PATH, JSON.stringify(data, null, 2));
   } catch (e) {
     // Marker is an optimization; ignore write errors
   }
@@ -457,9 +458,9 @@ function createMsalCachePlugin() {
     if (cacheContext.cacheHasChanged) {
       const dir = path.dirname(MSAL_CACHE_PATH);
       if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+        ensurePrivateDir(dir);
       }
-      fs.writeFileSync(MSAL_CACHE_PATH, cacheContext.tokenCache.serialize());
+      writePrivateFile(MSAL_CACHE_PATH, cacheContext.tokenCache.serialize());
     }
   };
 
@@ -501,7 +502,7 @@ async function refreshTokenSilently() {
 
     // Update the stored token
     const tokenPath = TOKEN_CACHE_PATH;
-    fs.writeFileSync(tokenPath, JSON.stringify({
+    writePrivateFile(tokenPath, JSON.stringify({
       accessToken: response.accessToken,
       expiresOn: response.expiresOn,
       account: response.account,
@@ -626,10 +627,10 @@ async function refreshGraphTokenSilently() {
 
     const dir = path.dirname(GRAPH_TOKEN_PATH);
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+      ensurePrivateDir(dir);
     }
 
-    fs.writeFileSync(GRAPH_TOKEN_PATH, JSON.stringify({
+    writePrivateFile(GRAPH_TOKEN_PATH, JSON.stringify({
       accessToken: response.accessToken,
       expiresOn: response.expiresOn,
       account: response.account,
@@ -723,10 +724,10 @@ async function acquireGraphToken() {
 function saveGraphToken(response, config) {
   const dir = path.dirname(GRAPH_TOKEN_PATH);
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    ensurePrivateDir(dir);
   }
 
-  fs.writeFileSync(GRAPH_TOKEN_PATH, JSON.stringify({
+  writePrivateFile(GRAPH_TOKEN_PATH, JSON.stringify({
     accessToken: response.accessToken,
     expiresOn: response.expiresOn,
     account: response.account,
@@ -2190,6 +2191,8 @@ function loadServerConfig() {
 function openBrowser(url) {
   // Spawn without a shell so characters in the URL (&, ", %) are passed as-is.
   const { spawn } = require("child_process");
+  // Only open web links; rundll32 and xdg-open would also run local files.
+  if (!/^https:\/\//i.test(url)) return;
   const platform = process.platform;
 
   let cmd;
@@ -2249,7 +2252,7 @@ function saveDeviceCodeToFile(code, url) {
 ═══════════════════════════════════════════════════════════════
 `;
   try {
-    fs.writeFileSync(codePath, content);
+    writePrivateFile(codePath, content);
   } catch (e) {
     // Ignore
   }
@@ -2326,10 +2329,10 @@ function saveToken(response, config) {
   const dir = path.dirname(tokenPath);
 
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    ensurePrivateDir(dir);
   }
 
-  fs.writeFileSync(tokenPath, JSON.stringify({
+  writePrivateFile(tokenPath, JSON.stringify({
     accessToken: response.accessToken,
     expiresOn: response.expiresOn,
     account: response.account,
@@ -2339,7 +2342,7 @@ function saveToken(response, config) {
 
   // Also save config separately
   const configPath = getConfigPath();
-  fs.writeFileSync(configPath, JSON.stringify({
+  writePrivateFile(configPath, JSON.stringify({
     tenantId: config.tenantId,
     clientId: config.clientId,
   }, null, 2));
@@ -2389,6 +2392,8 @@ Option 2: Run setup first:
 // ============================================================================
 
 async function main() {
+  tightenStateDir();
+
   // Log configuration on startup
   console.error("Agent 365 MCP Proxy v1.3.2");
   console.error(`Configuration:`);

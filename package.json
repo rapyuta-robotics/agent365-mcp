@@ -63,6 +63,7 @@
   "files": [
     "index.js",
     "cli.js",
+    "secure-fs.js",
     "README.md",
     "ADMIN.md",
     "AGENTS.md",

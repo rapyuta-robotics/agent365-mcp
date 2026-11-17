@@ -2,6 +2,7 @@
 const { PublicClientApplication } = require("@azure/msal-node");
 const fs = require("fs");
 const path = require("path");
+const { ensurePrivateDir, writePrivateFile, tightenStateDir } = require("./secure-fs");
 
 // Default configuration - can be overridden via environment variables
 const CONFIG = {
@@ -37,9 +38,9 @@ function saveConfig(config) {
   const configPath = getConfigPath();
   const dir = path.dirname(configPath);
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    ensurePrivateDir(dir);
   }
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writePrivateFile(configPath, JSON.stringify(config, null, 2));
 }
 
 function getMsalCachePath() {
@@ -64,9 +65,9 @@ function createMsalCachePlugin() {
     if (cacheContext.cacheHasChanged) {
       const dir = path.dirname(cachePath);
       if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+        ensurePrivateDir(dir);
       }
-      fs.writeFileSync(cachePath, cacheContext.tokenCache.serialize());
+      writePrivateFile(cachePath, cacheContext.tokenCache.serialize());
     }
   };
 
@@ -81,6 +82,8 @@ function getSignInRequiredPath() {
 function openBrowser(url) {
   // Spawn without a shell so characters in the URL (&, ", %) are passed as-is.
   const { spawn } = require("child_process");
+  // Only open web links; rundll32 and xdg-open would also run local files.
+  if (!/^https:\/\//i.test(url)) return;
   let cmd;
   let args;
   if (process.platform === "darwin") {
@@ -108,7 +111,7 @@ async function authenticate(tenantId, clientId, {
   const tokenPath = getTokenPath();
   const dir = path.dirname(tokenPath);
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+    ensurePrivateDir(dir);
   }
 
   const pca = new PublicClientApplication({
@@ -181,7 +184,7 @@ async function authenticate(tenantId, clientId, {
   }
 
   // Save token info (access token for quick access, MSAL cache has refresh token)
-  fs.writeFileSync(tokenPath, JSON.stringify({
+  writePrivateFile(tokenPath, JSON.stringify({
     accessToken: response.accessToken,
     expiresOn: response.expiresOn,
     account: response.account,
@@ -502,6 +505,7 @@ Your session is valid for ~90 days before re-authentication is needed.
 }
 
 async function main() {
+  tightenStateDir();
   const rawArgs = process.argv.slice(2);
   const useDeviceCode = rawArgs.includes("--device-code") ||
     (process.env.AGENT365_AUTH_FLOW || "").toLowerCase() === "device_code";
