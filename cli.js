@@ -501,12 +501,26 @@ Your session is valid for ~90 days before re-authentication is needed.
 `);
 }
 
+// Commands that sign in or start the server are switched off while the service is suspended.
+const SUSPENDED_COMMANDS = new Set(["auth", "login", "serve", "start", "setup", "install", "configure"]);
+
+function exitSuspended() {
+  console.error("agent365-mcp is suspended by Rapyuta Robotics IT and does not start.");
+  console.error("Remove the agent365 entry from your MCP client configuration,");
+  console.error("then run `npx -y github:rapyuta-robotics/agent365-mcp logout` to delete the saved tokens.");
+  process.exit(1);
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
   const useDeviceCode = rawArgs.includes("--device-code") ||
     (process.env.AGENT365_AUTH_FLOW || "").toLowerCase() === "device_code";
   const args = rawArgs.filter((a) => a !== "--device-code");
   const command = args[0];
+
+  if (SUSPENDED_COMMANDS.has(command) || (command === undefined && !process.stdin.isTTY)) {
+    exitSuspended();
+  }
 
   switch (command) {
     case "auth":
