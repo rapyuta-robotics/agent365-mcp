@@ -9,6 +9,11 @@
  * @see ADMIN.md for IT administrator setup guide
  * @see ARCHITECTURE.md for technical details
  */
+if (require.main === module) {
+  console.error("agent365-mcp is suspended by Rapyuta Robotics IT and does not start.");
+  process.exit(1);
+}
+
 const { Server } = require("@modelcontextprotocol/sdk/server/index.js");
 const { StdioServerTransport } = require("@modelcontextprotocol/sdk/server/stdio.js");
 const {
